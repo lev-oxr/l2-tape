@@ -14,3 +14,4 @@ data/
 .env
 docs/INSTRUCTIONS.md
 docs/decisions.md
+.DS_Store
