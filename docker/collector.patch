@@ -1,0 +1,34 @@
+diff --git a/collector/src/file.rs b/collector/src/file.rs
+index aea46ee..9a2566a 100644
+--- a/collector/src/file.rs
++++ b/collector/src/file.rs
+@@ -20,7 +20,7 @@ impl RotatingFile {
+         let date = datetime.date_naive().format("%Y%m%d");
+         let file = File::options()
+             .create(true)
+-            .write(true)
++            .append(true)
+             .open(format!("{path}_{date}.gz"))?;
+         Ok(GzEncoder::new(file, Compression::default()))
+     }
+diff --git a/collector/src/main.rs b/collector/src/main.rs
+index eb00bb4..f39c988 100644
+--- a/collector/src/main.rs
++++ b/collector/src/main.rs
+@@ -39,7 +39,6 @@ async fn main() -> Result<(), anyhow::Error> {
+         "binancefutures" | "binancefuturesum" => {
+             let streams = [
+                 "$symbol@trade",
+-                "$symbol@bookTicker",
+                 "$symbol@depth@0ms",
+                 // "$symbol@@markPrice@1s"
+             ]
+@@ -82,7 +81,7 @@ async fn main() -> Result<(), anyhow::Error> {
+             let topics = [
+                 "orderbook.1.$symbol",
+                 "orderbook.50.$symbol",
+-                "orderbook.500.$symbol",
++                "orderbook.1000.$symbol",
+                 "publicTrade.$symbol",
+             ]
+             .iter()

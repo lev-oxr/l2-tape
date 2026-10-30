@@ -1,0 +1,38 @@
+# On the VPS: docker compose up -d --build
+# Symbols here must match config.toml (the collector takes them as arguments).
+
+x-logging: &logging
+  options: { max-size: "10m", max-file: "3" }
+
+x-collector: &collector
+  build: { context: ., dockerfile: docker/collector.Dockerfile }
+  image: l2tape-collector
+  restart: unless-stopped
+  logging: *logging
+  volumes: ["./data:/data"]
+
+x-app: &app
+  build: { context: ., dockerfile: docker/app.Dockerfile }
+  image: l2tape-app
+  restart: unless-stopped
+  logging: *logging
+
+services:
+  collector-binance:
+    <<: *collector
+    command: ["/data/raw/binancefutures", "binancefutures", "btcusdt", "ethusdt"]
+
+  collector-bybit:
+    <<: *collector
+    command: ["/data/raw/bybit", "bybit", "btcusdt", "ethusdt"]
+
+  snapshotter:
+    <<: *app
+    command: ["snapshot"]
+    volumes: ["./data:/app/data", "./config.toml:/app/config.toml:ro"]
+
+  health:
+    <<: *app
+    command: ["health"]
+    env_file: .env
+    volumes: ["./data:/app/data:ro", "./config.toml:/app/config.toml:ro"]

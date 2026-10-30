@@ -1,0 +1,5 @@
+data_dir = "data"
+symbols = ["BTCUSDT", "ETHUSDT"]
+snapshot_interval_min = 15
+# ≈ 2 days of recording at the measured 7.2 GB/day (with x2 margin)
+disk_min_free_gb = 15
