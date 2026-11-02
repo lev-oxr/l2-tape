@@ -1,3 +1,73 @@
+diff --git a/collector/src/binancefuturesum/http.rs b/collector/src/binancefuturesum/http.rs
+index edc4c54..748e9bf 100644
+--- a/collector/src/binancefuturesum/http.rs
++++ b/collector/src/binancefuturesum/http.rs
+@@ -18,6 +18,10 @@ use tokio_tungstenite::{
+ };
+ use tracing::{error, warn};
+ 
++// A healthy connection is never silent for more than ~1.1 s (depth@0ms of two symbols);
++// a dead one can stay silent for minutes until a TCP reset. Reconnect.
++const READ_TIMEOUT: Duration = Duration::from_secs(5);
++
+ pub async fn fetch_symbol_list() -> Result<Vec<String>, reqwest::Error> {
+     Ok(reqwest::Client::new()
+         .get("https://fapi.binance.com/fapi/v1/exchangeInfo")
+@@ -74,12 +78,14 @@ pub async fn connect(
+     });
+ 
+     let mut last_ping = Instant::now();
+-    let mut checker = interval(Duration::from_secs(10));
++    let mut last_msg = Instant::now();
++    let mut checker = interval(Duration::from_secs(1));
+ 
+     loop {
+         select! {
+             msg = read.next() => match msg {
+                 Some(Ok(Message::Text(text))) => {
++                    last_msg = Instant::now();
+                     let recv_time = Utc::now();
+                     if ws_tx.send((recv_time, text)).is_err() {
+                         break;
+@@ -112,6 +118,10 @@ pub async fn connect(
+                 }
+             },
+             _ = checker.tick() => {
++                if last_msg.elapsed() > READ_TIMEOUT {
++                    warn!("read timeout");
++                    return Err(Error::from(io::Error::new(ErrorKind::TimedOut, "read")));
++                }
+                 if last_ping.elapsed() > Duration::from_secs(300) {
+                     warn!("Ping timeout.");
+                     return Err(Error::from(io::Error::new(
+diff --git a/collector/src/bybit/http.rs b/collector/src/bybit/http.rs
+index e302aba..e50a861 100644
+--- a/collector/src/bybit/http.rs
++++ b/collector/src/bybit/http.rs
+@@ -17,6 +17,10 @@ use tokio_tungstenite::{
+ };
+ use tracing::{error, warn};
+ 
++// A healthy connection is never silent for more than ~1.4 s (orderbook.1 alone pushes many
++// times a second); a dead one can stay silent for minutes until a TCP reset. Reconnect.
++const READ_TIMEOUT: Duration = Duration::from_secs(5);
++
+ pub async fn connect(
+     url: &str,
+     topics: Vec<String>,
+@@ -69,7 +73,11 @@ pub async fn connect(
+     });
+ 
+     loop {
+-        match read.next().await {
++        let Ok(msg) = tokio::time::timeout(READ_TIMEOUT, read.next()).await else {
++            warn!("read timeout");
++            return Err(Error::from(io::Error::new(ErrorKind::TimedOut, "read")));
++        };
++        match msg {
+             Some(Ok(Message::Text(text))) => {
+                 let recv_time = Utc::now();
+                 if ws_tx.send((recv_time, text)).is_err() {
 diff --git a/collector/src/file.rs b/collector/src/file.rs
 index aea46ee..9a2566a 100644
 --- a/collector/src/file.rs

@@ -3,3 +3,5 @@ symbols = ["BTCUSDT", "ETHUSDT"]
 snapshot_interval_min = 15
 # ≈ 2 days of recording at the measured 7.2 GB/day (with x2 margin)
 disk_min_free_gb = 15
+# chronyc tracking on the VPS: Root delay / 2 + Root dispersion (2026-10-30)
+clock_uncertainty_ms = 8.2

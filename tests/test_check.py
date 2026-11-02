@@ -6,9 +6,10 @@ check_<exchange>_btcusdt_ref.parquet: the snapshotter's REST snapshot at that id
 
 from pathlib import Path
 
-from l2tape.check import check_binance, check_bybit, load_ref, read_raw
+from l2tape.check import check_binance, check_bybit, day_holes, load_ref, read_raw
 
 FIXTURES = Path(__file__).parent / "fixtures"
+S = 10**9  # ns per second
 
 
 def load(exchange: str):
@@ -65,8 +66,10 @@ def test_silently_corrupted_delta_is_caught_by_the_reference():
     assert r.checks[0][2] > 0
 
 
-def msg(kind: str, u: int, bids=()):
-    return 0, {"topic": "orderbook.50.X", "type": kind, "data": {"u": u, "b": list(bids), "a": []}}
+def msg(kind: str, u: int, bids=(), t=0):
+    """Bybit message received at t seconds; exchange time = receive time."""
+    data = {"u": u, "b": list(bids), "a": []}
+    return t * S, {"topic": "orderbook.50.X", "type": kind, "ts": t * 1000, "data": data}
 
 
 def test_bybit_snapshot_mid_stream_and_u1_reset_are_not_gaps():
@@ -93,3 +96,29 @@ def test_references_are_not_modified():
     before = {rid: (dict(b.bids), dict(b.asks)) for rid, b in refs.items()}
     check_binance(lines[len(lines) // 2 :], refs)  # syncs from the reference, then applies deltas
     assert {rid: (b.bids, b.asks) for rid, b in refs.items()} == before
+
+
+def test_reconnect_hole_is_measured_in_time_and_counts_against_completeness():
+    lines = [
+        msg("snapshot", 100, t=0),
+        msg("delta", 101, t=1),
+        msg("delta", 102, t=2),
+        msg("snapshot", 90, t=10),  # reconnect: u may step back, the book is valid again
+        msg("delta", 91, t=11),
+    ]
+    r = check_bybit(lines, {}, depth=50)
+    assert r.gaps == [] and r.holes == [(2 * S, 10 * S)]
+    # day = [0, 20 s]: 8 s hole + 9 s after the last message
+    assert day_holes(r, 0, 20 * S) == [(0, 0), (2 * S, 10 * S), (11 * S, 20 * S)]
+
+
+def test_binance_lost_trades_are_counted_from_trade_ids():
+    trades = [(0, {"data": {"e": "trade", "t": t}}) for t in (5, 6, 8, 11, 12)]
+    assert check_binance(trades, {}).lost_trades == 3  # 7, 9 and 10 never arrived
+
+
+def test_latency_is_in_ns_and_plausible():
+    # exchange ms vs local ns: a unit slip makes this 10^6 times off
+    for exchange, check in (("binancefutures", check_binance), ("bybit", check_bybit)):
+        lat = sorted(check(*load(exchange)).latency)
+        assert 1e6 < lat[len(lat) // 2] < 1e9, exchange  # median between 1 ms and 1 s

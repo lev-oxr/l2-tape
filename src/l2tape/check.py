@@ -11,6 +11,7 @@ mid-stream: there (and after a gap) the first usable reference becomes the sync 
 import gzip
 import json
 import logging
+import statistics
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,19 @@ class Report:
     syncs: list[int] = field(default_factory=list)  # local_ts when the book became valid
     checks: list[tuple[int, int, int]] = field(default_factory=list)  # (ref id, compared, differ)
     unchecked: int = 0  # references that fell while the book was not valid
+    # (from, to): last depth message of a valid stretch -> next sync. Overstates each hole by
+    # up to one message interval (Binance ~30 ms, Bybit ~200 ms).
+    holes: list[tuple[int, int]] = field(default_factory=list)
+    first_ts: int | None = None  # first depth message in the file
+    last_valid: int | None = None  # last depth message while the book was valid
+    latency: list[int] = field(default_factory=list)  # local_ts - exchange time, ns, per message
+    lost_trades: int | None = None  # from gaps in trade ids, where the exchange numbers them
+
+    def synced(self, ts: int) -> None:
+        if self.last_valid is not None:
+            self.holes.append((self.last_valid, ts))
+        self.syncs.append(ts)
+        self.last_valid = ts
 
 
 def read_raw(path: Path) -> Iterator[tuple[int, dict]]:
@@ -86,18 +100,18 @@ def check_binance(lines: Iterable[tuple[int, dict]], refs: dict[int, Book]) -> R
     within hours. So after each comparison the reference becomes the new base: every check
     covers one interval, reference t0 + deltas = reference t1.
     """
-    rep = Report()
+    rep = Report(lost_trades=0)
     pending = sorted(refs)
     book: Book | None = None
     lo = hi = 0.0
     min_u = 0  # events ending before the sync snapshot are already in it
-    last_u = None
+    last_u = last_t = None
     chain: list[dict] = []  # events since the last break, replayed once a snapshot arrives
 
     def sync(snap: Book, sid: int, ts: int) -> None:
         nonlocal book, lo, hi, min_u, chain
         book, lo, hi, min_u = snap, min(snap.bids), max(snap.asks), sid
-        rep.syncs.append(ts)
+        rep.synced(ts)
         for d in chain:
             apply(d)
         chain = []
@@ -132,9 +146,17 @@ def check_binance(lines: Iterable[tuple[int, dict]], refs: dict[int, Book]) -> R
                 sync(Book(m["bids"], m["asks"]), sid, ts)
             continue
         d = m.get("data", {})
+        if d.get("e") == "trade":  # trade ids are consecutive per symbol
+            if last_t is not None:
+                rep.lost_trades += d["t"] - last_t - 1
+            last_t = d["t"]
+            continue
         if d.get("e") != "depthUpdate":
             continue
         rep.events += 1
+        if rep.first_ts is None:
+            rep.first_ts = ts
+        rep.latency.append(ts - d["E"] * 1_000_000)
         if last_u is not None and d["pu"] != last_u:
             rep.gaps.append(ts)
             book, chain = None, []
@@ -149,6 +171,7 @@ def check_binance(lines: Iterable[tuple[int, dict]], refs: dict[int, Book]) -> R
                 sync(refs[rid].copy(), rid, ts)
         else:
             apply(d)
+            rep.last_valid = ts
 
     rep.unchecked += len(pending)
     return rep
@@ -159,6 +182,10 @@ def check_bybit(lines: Iterable[tuple[int, dict]], refs: dict[int, Book], depth=
 
     REST `u` is on the orderbook.1000 counter, so references are compared exactly at the
     message with the same `u`. The stream keeps the top <depth> levels, as does REST.
+
+    After a reconnect `u` may even step back (the new connection lands on a node that lags),
+    so lost messages cannot be counted from `u`; holes are measured in time only. Trade ids
+    are UUIDs, so lost trades are unknown.
     """
     rep = Report()
     pending = sorted(refs)
@@ -168,16 +195,20 @@ def check_bybit(lines: Iterable[tuple[int, dict]], refs: dict[int, Book], depth=
         if not m.get("topic", "").startswith(f"orderbook.{depth}."):
             continue
         rep.events += 1
+        if rep.first_ts is None:
+            rep.first_ts = ts
+        rep.latency.append(ts - m["ts"] * 1_000_000)
         d = m["data"]
         if m["type"] == "snapshot":  # after (re)subscribe, or an exchange-side reset (u = 1)
             book = Book(d["b"], d["a"])
-            rep.syncs.append(ts)
+            rep.synced(ts)
         elif last_u is not None and d["u"] != last_u + 1:
             if book is not None:
                 rep.gaps.append(ts)
             book = None  # deltas are useless until the next snapshot
         elif book is not None:
             book.apply(d["b"], d["a"])
+            rep.last_valid = ts
         last_u = d["u"]
         while pending and pending[0] <= last_u:
             rid = pending.pop(0)
@@ -185,7 +216,7 @@ def check_bybit(lines: Iterable[tuple[int, dict]], refs: dict[int, Book], depth=
                 rep.unchecked += 1
             elif book is None:  # day file starts mid-stream, or after a gap
                 book = refs[rid].copy()
-                rep.syncs.append(ts)
+                rep.synced(ts)
             else:
                 rep.checks.append((rid, *compare(book, refs[rid], min(book.bids), max(book.asks))))
 
@@ -193,26 +224,83 @@ def check_bybit(lines: Iterable[tuple[int, dict]], refs: dict[int, Book], depth=
     return rep
 
 
+def hms(ts: int) -> str:
+    return datetime.fromtimestamp(ts / 1e9, UTC).strftime("%H:%M:%S")
+
+
+def day_holes(rep: Report, day_start: int, day_end: int) -> list[tuple[int, int]]:
+    """Every stretch of the day the book was unknown, including before the first sync and
+    after the last valid message. The span starts at the first message: before it the
+    collector was not deployed yet, which is not a recording fault."""
+    if rep.last_valid is None:
+        return [(rep.first_ts or day_start, day_end)]
+    return [(rep.first_ts, rep.syncs[0]), *rep.holes, (rep.last_valid, day_end)]
+
+
+def summary(rep: Report, holes: list[tuple[int, int]], day_end: int, raw_mb: float) -> str:
+    """One Markdown table row: stream quality for the day."""
+    span = day_end - (rep.first_ts or day_end)
+    lost = sum(b - a for a, b in holes)
+    complete = f"{1 - lost / span:.4%}" if span else "—"
+    q = [x / 1e6 for x in statistics.quantiles(rep.latency, n=100)] if len(rep.latency) > 1 else 0
+    lat = f"{q[49]:.0f} / {q[98]:.0f} / {max(rep.latency) / 1e6:.0f}" if q else "—"
+    # compared == 0: price moved beyond both books' depth in one interval, nothing to say
+    levels = [c for _, c, _ in rep.checks if c]
+    empty = len(rep.checks) - len(levels)
+    bad = sum(1 for _, _, d in rep.checks if d)
+    depth = f" ({min(levels)}–{max(levels)} lvl)" if levels else ""
+    trades = "—" if rep.lost_trades is None else rep.lost_trades
+    return (
+        f"| {complete} | {sum(b - a > 1e9 for a, b in holes)} | {lost / 1e9:.1f} | {trades} "
+        f"| {lat} | {len(levels) - bad} ok{depth}, {bad} differ, {empty} out of depth, "
+        f"{rep.unchecked} unchecked | {raw_mb:.0f} |"
+    )
+
+
 def run(cfg: dict) -> None:
-    """Quality of one recorded day (default: yesterday, UTC) for every exchange and symbol."""
+    """Quality report of one recorded day (default: yesterday, UTC) -> data/reports/<day>.md."""
     day = cfg.get("date") or (datetime.now(UTC) - timedelta(days=1)).date().isoformat()
+    start = datetime.fromisoformat(day).replace(tzinfo=UTC)
+    day_start, day_end = (int(t.timestamp()) * 10**9 for t in (start, start + timedelta(days=1)))
+    rows, details = [], []
     for exchange, check in (("binancefutures", check_binance), ("bybit", check_bybit)):
         for symbol in cfg["symbols"]:
             raw = Path(
                 cfg["data_dir"], "raw", exchange, f"{symbol.lower()}_{day.replace('-', '')}.gz"
             )
+            log.info("checking %s", raw)
             rep = check(read_raw(raw), load_refs(cfg["data_dir"], exchange, symbol, day))
-            # compared == 0: price moved beyond both books' depth in one interval, nothing to say
-            levels = [compared for _, compared, _ in rep.checks if compared] or [0]
-            empty = len(rep.checks) - len(levels) if rep.checks else 0
-            bad = sum(1 for _, _, differ in rep.checks if differ)
-            hms = lambda tss: " ".join(  # noqa: E731
-                datetime.fromtimestamp(t / 1e9, UTC).strftime("%H:%M:%S") for t in tss
+            holes = day_holes(rep, day_start, day_end)
+            rows.append(
+                f"| {exchange} {symbol} " + summary(rep, holes, day_end, raw.stat().st_size / 1e6)
             )
-            print(
-                f"{day} {exchange} {symbol}: {rep.events} events, {len(rep.syncs)} syncs, "
-                f"{len(rep.gaps)} gaps; refs {len(rep.checks) - empty - bad} match "
-                f"({min(levels)}-{max(levels)} levels), {bad} differ, {empty} out of depth, "
-                f"{rep.unchecked} unchecked\n"
-                f"  syncs {hms(rep.syncs)}; gaps {hms(rep.gaps)}"
-            )
+            details += [
+                f"| {exchange} {symbol} | {hms(a)} | {(b - a) / 1e9:.1f} |"
+                for a, b in holes
+                if b - a > 1e9
+            ]
+    text = "\n".join(
+        [
+            f"# l2-tape quality, {day}",
+            "",
+            f"Latency = local time − exchange time (Binance `E`, Bybit `ts`), "
+            f"± {cfg['clock_uncertainty_ms']} ms clock uncertainty (chrony bound).",
+            "Complete = share of the day the rebuilt book was valid, from the first message.",
+            "",
+            "| Stream | Complete | Holes > 1 s | Lost, s | Lost trades "
+            "| Latency p50 / p99 / max, ms | REST checks | Raw, MB |",
+            "|---|---|---|---|---|---|---|---|",
+            *rows,
+            "",
+            "## Holes > 1 s",
+            "",
+            "| Stream | From (UTC) | Duration, s |",
+            "|---|---|---|",
+            *details,
+            "",
+        ]
+    )
+    out = Path(cfg["data_dir"], "reports", f"{day}.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text)
+    print(text)
