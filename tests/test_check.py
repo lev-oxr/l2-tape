@@ -6,7 +6,8 @@ check_<exchange>_btcusdt_ref.parquet: the snapshotter's REST snapshot at that id
 
 from pathlib import Path
 
-from l2tape.check import check_binance, check_bybit, day_holes, load_ref, read_raw
+from l2tape.check import check_binance, check_bybit, day_holes, load_ref
+from l2tape.raw import read_raw
 
 FIXTURES = Path(__file__).parent / "fixtures"
 S = 10**9  # ns per second

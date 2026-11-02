@@ -23,7 +23,8 @@ from pathlib import Path
 
 import httpx
 
-from l2tape.metrics import GzTail, Stats, account, exposition
+from l2tape.metrics import Stats, account, exposition
+from l2tape.raw import GzTail
 from l2tape.snapshotter import URLS
 
 log = logging.getLogger(__name__)

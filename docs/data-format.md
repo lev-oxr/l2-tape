@@ -82,3 +82,8 @@ Connection: `wss://stream.bybit.com/v5/public/linear`, topics `orderbook.1`, `or
   (2026-10-31 03:38:24–03:44:43, VPS) until a TCP reset. The longest silence of a healthy
   connection in 2.5 days was 1.4 s, so 5 s is ≈ 4× margin. A timeout shows in the log as
   `read timeout` and in the file like any other reconnect.
+- A collector killed before it closes its gzip member (SIGKILL, OOM, power loss) leaves the
+  member cut short, and the next run appends its own member right after it. Standard gzip
+  readers (`gzcat`, Python `gzip`) stop at that seam, or decode the next member as garbage.
+  `l2tape.raw` splits members by their fixed 10-byte header (`1f8b 0800 0000 0000 00ff`)
+  and decodes each one alone. Seen once: Bybit, 2026-11-02 11:56, on a container restart.

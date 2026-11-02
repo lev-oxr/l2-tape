@@ -5,8 +5,9 @@ import pyarrow.parquet as pq
 from hftbacktest.types import BUY_EVENT, DEPTH_SNAPSHOT_EVENT, SELL_EVENT
 
 from l2tape.book import Book
-from l2tape.check import load_ref, read_raw
+from l2tape.check import load_ref
 from l2tape.convert import binance_rows, bybit_rows, initial_snapshot, write_events
+from l2tape.raw import read_raw
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "examples"))
 from book_by_minute import book_by_minute  # noqa: E402

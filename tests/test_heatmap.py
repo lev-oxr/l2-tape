@@ -2,9 +2,10 @@ from pathlib import Path
 
 import numpy as np
 
-from l2tape.check import load_ref, read_raw
+from l2tape.check import load_ref
 from l2tape.convert import bybit_rows, write_events
 from l2tape.heatmap import window
+from l2tape.raw import read_raw
 
 FIXTURES = Path(__file__).parent / "fixtures"
 S = 10**9

@@ -1,52 +1,8 @@
-"""Recorder metrics for Prometheus, read from the tails of the collector's gzip files.
-
-The collector keeps appending to its day file (one gzip member per collector run), so the
-newest bytes can be inflated incrementally, like `tail -f`. A gzip stream cannot be entered
-in the middle, though: a reader opened on an existing file inflates it from the start once,
-without parsing, and counts only what arrives after that.
-"""
+"""Recorder metrics for Prometheus, from the lines the collector appends (`raw.GzTail`)."""
 
 import json
 import statistics
-import zlib
 from dataclasses import dataclass, field
-from pathlib import Path
-
-CHUNK = 4 << 20  # compressed bytes per read: ~35 MB inflated at a time
-
-
-class GzTail:
-    def __init__(self, path: Path, from_start: bool):
-        self.path, self.offset, self.rest = path, 0, b""
-        self.skip_until = 0 if from_start else path.stat().st_size
-        self.z = zlib.decompressobj(wbits=31)
-
-    def lines(self) -> list[bytes]:
-        """Complete lines appended since the last call (none while catching up)."""
-        out: list[bytes] = []
-        with open(self.path, "rb") as f:
-            f.seek(self.offset)
-            while True:
-                skipping = self.offset < self.skip_until
-                data = f.read(min(CHUNK, self.skip_until - self.offset) if skipping else CHUNK)
-                if not data:
-                    return out
-                self.offset += len(data)
-                text = self.rest + self.inflate(data)
-                if skipping:  # keep only the unfinished last line
-                    self.rest = text[text.rfind(b"\n") + 1 :]
-                else:
-                    *new, self.rest = text.split(b"\n")
-                    out += new
-
-    def inflate(self, data: bytes) -> bytes:
-        parts = []
-        while data:
-            parts.append(self.z.decompress(data))
-            data = b""
-            if self.z.eof:  # end of a member: the next collector run starts a new one
-                data, self.z = self.z.unused_data, zlib.decompressobj(wbits=31)
-        return b"".join(parts)
 
 
 @dataclass

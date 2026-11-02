@@ -60,7 +60,7 @@ every 5 min, so a dead VPS or a broken Telegram setup raises an alert from outsi
 Grafana listens on the VPS's localhost only. Open it through an SSH tunnel:
 
 ```bash
-ssh -N -L 3000:localhost:3000 root@<vps>   # then http://localhost:3000, dashboard "l2-tape recorder"
+ssh -N -L 3001:localhost:3001 root@<vps>   # then http://localhost:3001, dashboard "l2-tape recorder"
 ```
 
 ## Measured quality, first 3 days (VPS in Lauterbourg, FR)

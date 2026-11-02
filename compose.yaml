@@ -10,6 +10,9 @@ x-collector: &collector
   restart: unless-stopped
   logging: *logging
   volumes: ["./data:/data"]
+  # On SIGINT the collector closes its gzip member. Docker's default 10 s before SIGKILL was
+  # not always enough (2026-11-02 11:56: Bybit cut short); a killed run's member stays open.
+  stop_grace_period: 30s
 
 x-app: &app
   build: { context: ., dockerfile: docker/app.Dockerfile }
@@ -38,7 +41,7 @@ services:
     volumes: ["./data:/app/data:ro", "./config.toml:/app/config.toml:ro"]
 
   # Trends: Prometheus scrapes health:9100; Grafana listens on the VPS's localhost only.
-  # Open it through an SSH tunnel: ssh -L 3000:localhost:3000 root@<vps>, then localhost:3000.
+  # Open it through an SSH tunnel: ssh -N -L 3001:localhost:3001 root@<vps>, then localhost:3001.
   # Their data lives in named volumes, not ./data, which sync.sh copies to the laptop.
   prometheus:
     image: prom/prometheus:v3.15.0
@@ -54,7 +57,7 @@ services:
     image: grafana/grafana:13.2.4
     restart: unless-stopped
     logging: *logging
-    ports: ["127.0.0.1:3000:3000"]
+    ports: ["127.0.0.1:3001:3000"]  # 3000 is taken by another project on the VPS
     environment:
       # Reachable only through the SSH tunnel, so the SSH key is the login.
       GF_AUTH_ANONYMOUS_ENABLED: "true"

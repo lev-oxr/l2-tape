@@ -18,7 +18,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from l2tape.check import load_ref, read_raw
+from l2tape.check import load_ref
+from l2tape.raw import read_raw
 
 log = logging.getLogger(__name__)
 

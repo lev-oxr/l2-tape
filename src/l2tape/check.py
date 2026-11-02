@@ -8,11 +8,9 @@ The collector writes no snapshot when it rotates to a new day file, so a day fil
 mid-stream: there (and after a gap) the first usable reference becomes the sync point.
 """
 
-import gzip
-import json
 import logging
 import statistics
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +18,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from l2tape.book import Book
+from l2tape.raw import read_raw
 
 log = logging.getLogger(__name__)
 
@@ -44,17 +43,6 @@ class Report:
             self.holes.append((self.last_valid, ts))
         self.syncs.append(ts)
         self.last_valid = ts
-
-
-def read_raw(path: Path) -> Iterator[tuple[int, dict]]:
-    """(local_ts, message) per line; stops quietly at a truncated tail (collector was killed)."""
-    with gzip.open(path, "rt") as f:
-        try:
-            for line in f:
-                ts, msg = line.split(" ", 1)
-                yield int(ts), json.loads(msg)
-        except EOFError:
-            log.warning("%s: truncated gzip tail, read up to it", path)
 
 
 def load_ref(path: Path) -> tuple[int, Book]:
