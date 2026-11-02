@@ -3,6 +3,7 @@ name = "l2tape"
 version = "0.1.0"
 description = "24/7 L2 order book recorder with proof of completeness"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Oleksandr Levchenko", email = "levchenko.oleksandr@hotmail.com" }
 ]

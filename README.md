@@ -1,5 +1,7 @@
 # l2-tape
 
+[![ci](https://github.com/lev-oxr/l2-tape/actions/workflows/ci.yml/badge.svg)](https://github.com/lev-oxr/l2-tape/actions/workflows/ci.yml)
+
 A 24/7 recorder of the L2 order book and trades for BTCUSDT and ETHUSDT perpetuals on
 Binance USDⓈ-M and Bybit linear — and, mainly, the proof that the recording is complete
 and correct.
@@ -19,6 +21,7 @@ Public market data only: no API keys, no orders.
 | `l2tape convert` | a day → normalized Parquet (`data/events/`) and hftbacktest `.npz` (`data/hbt/`) |
 
 Raw format: [docs/data-format.md](docs/data-format.md).
+The collector is hftbacktest's (MIT), see [NOTICE](NOTICE).
 
 ## Run
 
@@ -103,3 +106,7 @@ Notes:
   00:00 on Bybit is the checker's own warm-up, not lost data: the day file starts without a
   snapshot, and the four REST snapshots are taken one after another (Bybit at 00:00:02–03).
 - Volume: ≈ 1.3 GB/day for all 4 streams on a weekend, ≈ 2 GB on a weekday.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The bundled hftbacktest collector patch: see [NOTICE](NOTICE).
