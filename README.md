@@ -8,7 +8,37 @@ and correct.
 
 Public market data only: no API keys, no orders.
 
+![Order book heatmap with trades, spread, top-10 imbalance and cumulative delta](docs/img/heatmap.jpg)
+*15 minutes of the recorded Binance BTCUSDT book: resting quantity per price (colour), trades
+(green: aggressive buy, red: aggressive sell), spread, top-10 imbalance, cumulative delta.*
+
 ## How it works
+
+```mermaid
+flowchart LR
+    subgraph vps["VPS · Docker Compose"]
+        bws["Binance WebSocket"] --> cb["collector-binance"]
+        yws["Bybit WebSocket"] --> cy["collector-bybit"]
+        cb --> raw[("data/raw · gzip per day")]
+        cy --> raw
+        rest["REST depth · 1000 levels"] --> snap["snapshotter · every 15 min"]
+        snap --> snaps[("data/snapshots · Parquet")]
+        raw --> health["health"]
+        health -->|alerts| tg["Telegram"]
+        health -->|"ping every 5 min"| hc["healthchecks.io"]
+        health -->|"/metrics"| prom["Prometheus"]
+        prom --> graf["Grafana"]
+    end
+    subgraph laptop["Laptop"]
+        check["l2tape check · book vs REST"] --> report["daily quality report"]
+        convert["l2tape convert"] --> events[("Parquet events")]
+        convert --> hbt[("hftbacktest .npz")]
+        events --> duck["DuckDB · heatmap notebook"]
+    end
+    raw -->|"sync.sh · rsync + checksums"| check
+    raw --> convert
+    snaps --> check
+```
 
 | Part | What it does |
 |---|---|
@@ -65,6 +95,8 @@ Grafana listens on the VPS's localhost only. Open it through an SSH tunnel:
 ```bash
 ssh -N -L 3001:localhost:3001 root@<vps>   # then http://localhost:3001, dashboard "l2-tape recorder"
 ```
+
+![Grafana dashboard: stream state, messages per second, latency p50/p99, resyncs, free disk](docs/img/grafana.jpg)
 
 ## Measured quality, first 3 days (VPS in Lauterbourg, FR)
 
