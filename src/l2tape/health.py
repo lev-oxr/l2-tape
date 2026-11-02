@@ -3,6 +3,11 @@
 A stream is <exchange> <SYMBOL>; its age is the time since its newest file last changed
 (mtime). The collector writes continuously, so 5 minutes without a change means the
 recording stopped, whatever the reason.
+
+Who watches the watchdog: every 5 minutes it pings an external dead man's switch
+(HEALTHCHECK_URL, e.g. healthchecks.io), which alerts on its own when the pings stop —
+the VPS is down, or this process is. Pings are sent only while every alert has been
+delivered, so a broken Telegram setup is caught the same way.
 """
 
 import logging
@@ -20,6 +25,7 @@ log = logging.getLogger(__name__)
 EXCHANGES = tuple(URLS)  # collector output dirs are named like the snapshotter's exchanges
 STALL_S = 5 * 60
 CHECK_EVERY_S = 30
+PING_EVERY_S = 5 * 60
 
 
 def utc(ts: float) -> str:
@@ -59,6 +65,12 @@ def evaluate(
     return msgs
 
 
+def no_url(e: Exception) -> str:
+    """httpx puts the request URL into exception messages; both our URLs carry a secret."""
+    status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else ""
+    return f"{type(e).__name__} {status}".strip()
+
+
 def send(client: httpx.Client, text: str) -> None:
     token, chat_id = os.environ["TELEGRAM_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
     resp = client.post(
@@ -75,6 +87,8 @@ def run(cfg: dict) -> None:
     started = time.time()
     state: dict = {}
     pending = ["ℹ️ l2-tape: health запущено"]
+    ping_url, last_ping = os.environ.get("HEALTHCHECK_URL"), 0.0
+    log.info("watchdog ping: %s", "every 5 min" if ping_url else "off, HEALTHCHECK_URL not set")
     with httpx.Client(timeout=10) as client:
         while True:
             now = time.time()
@@ -87,8 +101,14 @@ def run(cfg: dict) -> None:
             while pending:
                 try:
                     send(client, pending[0])
-                except Exception:
-                    log.exception("telegram send failed, will retry")
+                except Exception as e:
+                    log.warning("telegram send failed (%s), will retry", no_url(e))
                     break
                 log.info("sent: %s", pending.pop(0))
+            if ping_url and not pending and now - last_ping >= PING_EVERY_S:
+                try:
+                    client.get(ping_url).raise_for_status()
+                    last_ping = now
+                except Exception as e:
+                    log.warning("watchdog ping failed (%s), will retry", no_url(e))
             time.sleep(CHECK_EVERY_S)

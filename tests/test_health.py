@@ -1,6 +1,9 @@
 import os
 
+import httpx
+
 from l2tape import health
+from l2tape.health import no_url
 
 NOW = 1_793_400_000.0
 BTC = "bybit BTCUSDT"
@@ -40,3 +43,12 @@ def test_disk_alerts_once_and_clears():
     assert health.evaluate(state, {}, NOW, 10, 15)[0].startswith("🟠")
     assert health.evaluate(state, {}, NOW + 30, 9, 15) == []
     assert health.evaluate(state, {}, NOW + 60, 20, 15)[0].startswith("🟢")
+
+
+def test_errors_are_logged_without_the_secret_url():
+    req = httpx.Request("POST", "https://api.telegram.org/botSECRET/sendMessage")
+    err = httpx.HTTPStatusError(
+        "for url .../botSECRET/...", request=req, response=httpx.Response(401, request=req)
+    )
+    assert no_url(err) == "HTTPStatusError 401"
+    assert no_url(httpx.ConnectError("https://hc-ping.com/SECRET")) == "ConnectError"

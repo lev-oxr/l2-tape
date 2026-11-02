@@ -31,7 +31,11 @@ On the laptop:
 ```bash
 scripts/sync.sh root@<vps>:/root/l2-tape/data
 uv run l2tape check --date 2026-11-01     # → data/reports/2026-11-01.md
+scripts/install-sync.sh root@<vps>:/root/l2-tape/data   # sync daily at 09:00 (launchd)
 ```
+
+`health` pings a dead man's switch (`HEALTHCHECK_URL` in `.env`, e.g. healthchecks.io)
+every 5 min, so a dead VPS or a broken Telegram setup raises an alert from outside.
 
 ## Measured quality, first 3 days (VPS in Lauterbourg, FR)
 
