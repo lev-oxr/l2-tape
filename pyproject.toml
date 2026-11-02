@@ -21,6 +21,10 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "duckdb>=2.0.0",
+    "hftbacktest==2.4.4",
+    "marimo>=0.25.2",
+    "plotly>=7.1.0",
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",
     "ruff>=0.17.3",
@@ -33,5 +37,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+"notebooks/*" = ["B018"]  # marimo shows a cell's last expression
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.marimo.runtime]
+output_max_bytes = 30_000_000  # the book heatmap of 15 min is ~11 MB of plot data

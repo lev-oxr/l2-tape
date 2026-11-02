@@ -12,9 +12,11 @@ Public market data only: no API keys, no orders.
 |---|---|
 | collector | [hftbacktest](https://github.com/nkaz001/hftbacktest) collector, pinned and patched ([docker/](docker/)): raw WebSocket messages → `data/raw/<exchange>/<symbol>_<YYYYMMDD>.gz` |
 | `l2tape snapshot` | REST order book snapshot (1000 levels) every 15 min → `data/snapshots/` (Parquet) |
-| `l2tape health` | Telegram alert when a stream stops growing for 5 min, or the disk runs low |
+| `l2tape health` | Telegram alert when a stream stops growing for 5 min, or the disk runs low; `/metrics` for Prometheus |
+| Prometheus + Grafana | trends of the recorder for 30 days: messages/s, latency p50/p99, resyncs, free disk |
 | `scripts/sync.sh` | copies finished days to the laptop, verifies checksums, only then prunes the VPS |
 | `l2tape check` | replays a day, rebuilds the book, compares it with every REST snapshot → quality report |
+| `l2tape convert` | a day → normalized Parquet (`data/events/`) and hftbacktest `.npz` (`data/hbt/`) |
 
 Raw format: [docs/data-format.md](docs/data-format.md).
 
@@ -34,8 +36,32 @@ uv run l2tape check --date 2026-11-01     # → data/reports/2026-11-01.md
 scripts/install-sync.sh root@<vps>:/root/l2-tape/data   # sync daily at 09:00 (launchd)
 ```
 
+## Use the data
+
+```bash
+uv run l2tape convert --date 2026-11-01
+# DuckDB: spread and top-10 imbalance at every minute end
+uv run python examples/book_by_minute.py data/events/exchange=bybit/symbol=BTCUSDT/date=2026-11-01
+# hftbacktest: replay the day, compare its book with the REST snapshots
+uv run python examples/hbt_replay.py bybit BTCUSDT 2026-11-01
+# book heatmap with trades, spread, imbalance and delta (opens in the browser)
+uv run marimo run notebooks/book_heatmap.py
+```
+
+`data/events` has one row per book level or trade, the same columns for both exchanges:
+`local_ts`, `exch_ts` (ns), `kind` (snapshot / delta / trade), `side`, `price`, `qty`,
+update ids, `seq`, and `conn_id`, which grows with every snapshot: levels of an older
+connection are stale. The day files carry no snapshot at 00:00, so the hftbacktest data
+comes with `_snapshot.npz` built from the day's first REST snapshot.
+
 `health` pings a dead man's switch (`HEALTHCHECK_URL` in `.env`, e.g. healthchecks.io)
 every 5 min, so a dead VPS or a broken Telegram setup raises an alert from outside.
+
+Grafana listens on the VPS's localhost only. Open it through an SSH tunnel:
+
+```bash
+ssh -N -L 3000:localhost:3000 root@<vps>   # then http://localhost:3000, dashboard "l2-tape recorder"
+```
 
 ## Measured quality, first 3 days (VPS in Lauterbourg, FR)
 

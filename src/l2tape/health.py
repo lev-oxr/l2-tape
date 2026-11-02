@@ -8,16 +8,22 @@ Who watches the watchdog: every 5 minutes it pings an external dead man's switch
 (HEALTHCHECK_URL, e.g. healthchecks.io), which alerts on its own when the pings stop —
 the VPS is down, or this process is. Pings are sent only while every alert has been
 delivered, so a broken Telegram setup is caught the same way.
+
+Trends (for Prometheus/Grafana): /metrics on port 9100, inside the compose network only.
 """
 
 import logging
 import os
 import shutil
+import threading
 import time
+from collections import defaultdict
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
 
+from l2tape.metrics import GzTail, Stats, account, exposition
 from l2tape.snapshotter import URLS
 
 log = logging.getLogger(__name__)
@@ -26,17 +32,24 @@ EXCHANGES = tuple(URLS)  # collector output dirs are named like the snapshotter'
 STALL_S = 5 * 60
 CHECK_EVERY_S = 30
 PING_EVERY_S = 5 * 60
+METRICS_PORT = 9100
+ACTIVE_S = 10 * 60  # a raw file unchanged for this long is finished (yesterday's)
 
 
 def utc(ts: float) -> str:
     return time.strftime("%H:%M:%S UTC", time.gmtime(ts))
 
 
+def stream_of(f: Path) -> str:
+    """raw/<exchange>/<symbol>_<date>.gz -> "<exchange> <SYMBOL>"."""
+    return f"{f.parent.name} {f.name.rsplit('_', 1)[0].upper()}"
+
+
 def stream_ages(raw_dir: Path, now: float) -> dict[str, float]:
     """Seconds since each stream's newest file in raw/<exchange>/<symbol>_<date>.gz changed."""
     ages: dict[str, float] = {}
     for f in raw_dir.glob("*/*_*.gz"):
-        stream = f"{f.parent.name} {f.name.rsplit('_', 1)[0].upper()}"
+        stream = stream_of(f)
         ages[stream] = min(ages.get(stream, float("inf")), now - f.stat().st_mtime)
     return ages
 
@@ -79,6 +92,37 @@ def send(client: httpx.Client, text: str) -> None:
     resp.raise_for_status()
 
 
+def read_tails(raw_dir: Path, tails: dict, stats: dict, now: float) -> None:
+    """Count new messages of every file being written. Files present when health starts
+    are caught up without counting; files that appear later are read from the start."""
+    first = not tails
+    for f in raw_dir.glob("*/*_*.gz"):
+        if f not in tails and now - f.stat().st_mtime < ACTIVE_S:
+            tails[f] = GzTail(f, from_start=not first)
+    for f, tail in list(tails.items()):
+        for line in tail.lines():
+            if line:
+                account(stats[stream_of(f)], f.parent.name, line)
+        if now - f.stat().st_mtime > ACTIVE_S:
+            del tails[f]
+
+
+def serve_metrics(page: list[str]) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = page[0].encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:  # one line per scrape is noise
+            pass
+
+    server = ThreadingHTTPServer(("", METRICS_PORT), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
 def run(cfg: dict) -> None:
     # httpx logs every request URL at INFO, and the Telegram URL contains the bot token.
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -89,6 +133,10 @@ def run(cfg: dict) -> None:
     pending = ["ℹ️ l2-tape: health запущено"]
     ping_url, last_ping = os.environ.get("HEALTHCHECK_URL"), 0.0
     log.info("watchdog ping: %s", "every 5 min" if ping_url else "off, HEALTHCHECK_URL not set")
+    tails: dict[Path, GzTail] = {}
+    stats: dict[str, Stats] = defaultdict(Stats)
+    page = [""]
+    serve_metrics(page)
     with httpx.Client(timeout=10) as client:
         while True:
             now = time.time()
@@ -111,4 +159,9 @@ def run(cfg: dict) -> None:
                     last_ping = now
                 except Exception as e:
                     log.warning("watchdog ping failed (%s), will retry", no_url(e))
+            try:  # trends are a nice-to-have: never let them stop the alerts
+                read_tails(data_dir / "raw", tails, stats, now)
+                page[0] = exposition(stats, ages, free_gb * 1e9)
+            except Exception:
+                log.exception("metrics failed")
             time.sleep(CHECK_EVERY_S)

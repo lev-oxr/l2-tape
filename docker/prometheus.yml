@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 30s  # health refreshes its numbers every 30 s
+
+scrape_configs:
+  - job_name: l2tape
+    static_configs:
+      - targets: ["health:9100"]

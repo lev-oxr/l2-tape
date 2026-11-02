@@ -36,3 +36,34 @@ services:
     command: ["health"]
     env_file: .env
     volumes: ["./data:/app/data:ro", "./config.toml:/app/config.toml:ro"]
+
+  # Trends: Prometheus scrapes health:9100; Grafana listens on the VPS's localhost only.
+  # Open it through an SSH tunnel: ssh -L 3000:localhost:3000 root@<vps>, then localhost:3000.
+  # Their data lives in named volumes, not ./data, which sync.sh copies to the laptop.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    logging: *logging
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes: ["./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro", "prometheus:/prometheus"]
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    restart: unless-stopped
+    logging: *logging
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      # Reachable only through the SSH tunnel, so the SSH key is the login.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes: ["./docker/grafana:/etc/grafana/provisioning:ro", "grafana:/var/lib/grafana"]
+
+volumes:
+  prometheus:
+  grafana:
